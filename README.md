@@ -1,2 +1,2 @@
 # Project-Echo
-A c++ script that will eventually be able to determine the location of a sound's origin based on the input of two microphones embedded in a robotic head similar to the human ears.
+Redone, now the basis for a simple software amp. Its intended purpose is to provide relief for movies with inflated dynamic ranges which are too quiet and too loud at different times.
