@@ -1,23 +1,11 @@
-﻿using CSCore.CoreAudioAPI;
-using System;
-using System.Collections.Generic;
+﻿using System;
 using System.Diagnostics;
-using System.Linq;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Controls;
 using System.Timers;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.ComponentModel;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
-using AudioSwitcher.AudioApi.CoreAudio;
+using System.Windows.Threading;
+
+//credits
+//<div>Icons made by <a href="https://www.flaticon.com/authors/smashicons" title="Smashicons">Smashicons</a> from <a href="https://www.flaticon.com/" title="Flaticon">www.flaticon.com</a> is licensed by <a href="http://creativecommons.org/licenses/by/3.0/" title="Creative Commons BY 3.0" target="_blank">CC 3.0 BY</a></div>
 
 namespace DRWatchdogV2
 {
@@ -26,94 +14,17 @@ namespace DRWatchdogV2
     /// </summary>
     public partial class MainWindow : Window
     {
-        //reads media, could condense and clean
-        private static AudioSessionManager2 GetDefaultAudioSessionManager2(DataFlow dataFlow)
-        {
-
-            using (var enumerator = new MMDeviceEnumerator())
-            {
-                using (var device = enumerator.GetDefaultAudioEndpoint(dataFlow, Role.Multimedia))
-                {
-                    //Debug.WriteLine("DefaultDevice: " + device.FriendlyName);
-                    var sessionManager = AudioSessionManager2.FromMMDevice(device);
-                    return sessionManager;
-                }
-            }
-        }
-        private void SetMediaManager()
-        {
-            try
-            {
-
-                using (var sessionManager = GetDefaultAudioSessionManager2(DataFlow.Render))
-                {
-                    using (var sessionEnumerator = sessionManager.GetSessionEnumerator())
-                    {
-                        foreach (var session in sessionEnumerator)
-                        {
-                            if (session.QueryInterface<AudioMeterInformation>() != null)
-                            {
-                                using (var myMedia = session.QueryInterface<AudioMeterInformation>())
-                                {
-                                    buffer = myMedia.GetPeakValue();
-                                    //Console.WriteLine(buffer);
-                                    try
-                                    {
-                                        this.Dispatcher.Invoke(() =>
-                                        {
-
-                                            Emu.Value = buffer;
-                                        });
-                                    }
-                                    catch (Exception e)
-                                    {
-                                        Debug.WriteLine(e.ToString());
-                                    }
-
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch(Exception e)
-            {
-                Debug.WriteLine(e.ToString());
-            }
-        }
-        private void RunMTAThread()
-        {
-            Thread t = new Thread(SetMediaManager);
-            t.SetApartmentState(ApartmentState.MTA);
-            t.Start();
-        }
-
-        //checks and changes volume
-        private void checkVol(float val)
-        {
-            if ((!volLowered) && (val >= UpThresh)) { volLowered = !volLowered; changeVol = !changeVol;
-            }
-            else if ((volLowered) && (val <= DownThresh)) { volLowered = !volLowered; changeVol = !changeVol;
-            }
-        }
-        private void raiseVol()
-        {
-            VolumeMixer.SetVol(Convert.ToInt32(defaultVol));
-        }
-        private void lowerVol()
-        {
-            VolumeMixer.SetVol(Convert.ToInt32(defaultVol * percentMod));
-        }
-
         //static and private variables
-        private float buffer = 0;
         private bool changeVol = false;
         private bool volLowered = false;
         private System.Timers.Timer myTimer;
-        public int timerInterval = 50;
+        private System.Timers.Timer attackTimer;
+        private System.Timers.Timer releaseTimer;
+        private VolumeMixer myVolumeMixer;
 
         //dynamic variables
         public double UpThresh = 0.80;
+        public int timerInterval = 50;
         public double DownThresh = 0.40;
         public double percentMod = 0.50;
         public double attackVal = 10;
@@ -125,32 +36,81 @@ namespace DRWatchdogV2
         {
             Emu.Minimum = 0;
             Emu.Maximum = 1;
+            Emu_Copy.Minimum = 0;
+            Emu_Copy.Maximum = 1;
+        }
+        private void SetVolumeMixer()
+        {
+            myVolumeMixer = new VolumeMixer(10);
+            VolumeMixer.SetVol(defaultVol);
         }
         private void SetTimer()
         {
             myTimer = new System.Timers.Timer(timerInterval);
+            attackTimer = new System.Timers.Timer(attackVal);
+            releaseTimer = new System.Timers.Timer(releaseVal);
             myTimer.Elapsed += OnTimedEvent;
+            attackTimer.Elapsed += OnTimedEventAttack;
+            releaseTimer.Elapsed += OnTimedEventRelease;
             myTimer.AutoReset = true;
-
+            attackTimer.AutoReset = false;
+            releaseTimer.AutoReset = false;
+            myTimer.Enabled = false;
+            attackTimer.Enabled = false;
+            releaseTimer.Enabled = false;
+        }
+        private void OnTimedEventRelease(object sender, ElapsedEventArgs e)
+        {
+            Debug.WriteLine("Released");
+            VolumeMixer.SetVol(Convert.ToInt32(defaultVol));
+            myTimer.Enabled = true;
+        }
+        private void OnTimedEventAttack(object sender, ElapsedEventArgs e)
+        {
+            Debug.WriteLine("Attacked");
+            VolumeMixer.SetVol(Convert.ToInt32(defaultVol * percentMod));
+            myTimer.Enabled = true;
         }
         private void OnTimedEvent(Object source, ElapsedEventArgs e)
         {
-            RunMTAThread();
-            Dispatcher.BeginInvoke(
-            new ThreadStart(() => checkVol(buffer)));
+            myVolumeMixer.ReadToBuffer();
+            Dispatcher.Invoke(new Action(() => { Emu.Value = myVolumeMixer.bufferMemory.ReadLast(); }), DispatcherPriority.ContextIdle);
+            if(myVolumeMixer.bufferMemory.dataLoaded) Dispatcher.Invoke(new Action(() => { Emu_Copy.Value = myVolumeMixer.bufferMemory.ReadAverage(); }), DispatcherPriority.ContextIdle);
+            Dispatcher.Invoke(new Action(() => { checkVolume(myVolumeMixer.bufferMemory.ReadLast()); }), DispatcherPriority.ContextIdle);
+            myTimer.Interval = timerInterval;
+        }
+
+        //checks and changes volume
+        private void checkVolume(float val)
+        {
+            if ((!volLowered) && (val >= UpThresh))
+            {
+                volLowered = !volLowered; changeVol = !changeVol;
+            }
+            else if ((volLowered) && (val <= DownThresh))
+            {
+                volLowered = !volLowered; changeVol = !changeVol;
+            }
             if (changeVol)
             {
                 myTimer.Enabled = false;
                 changeVol = !changeVol;
                 //note: volLowered has already been toggled
-                if (!volLowered) { raiseVol(); myTimer.Interval = releaseVal;
+                if (!volLowered)
+                {
+                    //raise volume, need to check after delay 
+                    releaseTimer.Interval = releaseVal;
+                    releaseTimer.Enabled = true;
                 }
-                else { lowerVol(); myTimer.Interval = attackVal;
+                else
+                {
+                    //lower volume, need to check after delay 
+                    attackTimer.Interval = attackVal;
+                    attackTimer.Enabled = true;
                 }
-                myTimer.Enabled = true;
             }
-            else  myTimer.Interval = timerInterval;
         }
+        
 
         //GUI
         public void RunProg_Click(object sender, RoutedEventArgs e)
@@ -172,16 +132,24 @@ namespace DRWatchdogV2
             percentMod = Convert.ToDouble(PR.Text);
             attackVal = Convert.ToDouble(AT.Text);
             releaseVal = Convert.ToDouble(RE.Text);
-            attackVal = Convert.ToDouble(AT.Text);
-        }
-
-        public MainWindow()
-        {
-            InitializeComponent();
-            SetTimer();
-            SetProgressBar();
+            timerInterval = Convert.ToInt32(IN.Text);
             VolumeMixer.SetVol(defaultVol);
         }
 
+        //Main
+        public MainWindow()
+        {
+            if (Process.GetProcessesByName(Process.GetCurrentProcess().ProcessName).Length > 1)
+            {
+                Close();
+                return;
+
+            } //Allows only one persistance of the program to run
+
+            InitializeComponent();
+            SetProgressBar();
+            SetVolumeMixer();
+            SetTimer();
+    }
     }
 }

@@ -1,11 +1,16 @@
 ﻿using CSCore.CoreAudioAPI;
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace DRWatchdogV2
 {
-    class VolumeMixer
+    class VolumeMixer : VolumeMeterReader
     {
+        public VolumeMixer(int memory) : base(memory)
+        {}
+
         [ComImport]
         [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         private interface IMMDeviceEnumerator
@@ -66,6 +71,68 @@ namespace DRWatchdogV2
             }
             catch (Exception ex) { Console.WriteLine($"**Could not set audio level** {ex.Message}"); }
         }
+    }
+
+    class VolumeMeterReader
+    {
+        private float bbuffer = 0;
+        public CircularFloat bufferMemory;
+
+        public VolumeMeterReader(int memory )
+        {
+            bufferMemory = new CircularFloat(memory);
+        }
+
+        //reads media, could condense and clean
+        private static AudioSessionManager2 GetDefaultAudioSessionManager2(DataFlow dataFlow)
+        {
+
+            using (var enumerator = new MMDeviceEnumerator())
+            {
+                using (var device = enumerator.GetDefaultAudioEndpoint(dataFlow, Role.Multimedia))
+                {
+                    //Debug.WriteLine("DefaultDevice: " + device.FriendlyName);
+                    var sessionManager = AudioSessionManager2.FromMMDevice(device);
+                    return sessionManager;
+                }
+            }
+        }
+        private void SetMediaManager()
+        {
+            try
+            {
+
+                using (var sessionManager = GetDefaultAudioSessionManager2(DataFlow.Render))
+                {
+                    using (var sessionEnumerator = sessionManager.GetSessionEnumerator())
+                    {
+                        foreach (var session in sessionEnumerator)
+                        {
+                            if (session.QueryInterface<AudioMeterInformation>() != null)
+                            {
+                                using (var myMedia = session.QueryInterface<AudioMeterInformation>())
+                                {
+                                    bbuffer = myMedia.GetPeakValue();
+                                    if ((bbuffer > 0) && (bbuffer <= 1)) bufferMemory.Add(bbuffer);
+
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                Debug.WriteLine("MTA error on volume mixer setmediamanager");
+            }
+        }
+        public void ReadToBuffer()
+        {
+            Thread t = new Thread(SetMediaManager);
+            t.SetApartmentState(ApartmentState.MTA);
+            t.Start();
+        }
+
     }
 }
 
